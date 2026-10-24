@@ -1,0 +1,30 @@
+# Python & Virtual Env
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+
+# Environment Variables
+.env
+*.env.local
+
+# Databases & Runtime Models
+*.db
+*.sqlite3
+*.pt
+*.onnx
+backend/data/*.db
+
+# Node / Frontend
+node_modules/
+frontend/dist/
+frontend/build/
+.vite/
+
+# IDEs & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
