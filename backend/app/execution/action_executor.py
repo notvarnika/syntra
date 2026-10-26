@@ -8,6 +8,7 @@ import webbrowser
 from datetime import datetime
 from typing import Optional, Tuple
 import pyautogui
+import pygetwindow as gw
 from app.config import DATA_DIR
 from app.schemas import StructuredIntent
 
@@ -63,33 +64,38 @@ class ActionExecutor:
                 query = intent.query or target
                 return self._perform_web_search(query)
 
-            # 3. CLICK / SELECT TARGET (Demo 1, Demo 3, Context "Open first result")
+            # 3. CLICK / SELECT TARGET ON CURRENT SCREEN OR TAB (Gaze / Gesture / Context)
             if action in ("CLICK", "SELECT"):
                 now = time.time()
                 if now - self._last_click_time < 0.45:
                     return True, "Click debounced"
                 self._last_click_time = now
 
-                if target and target.lower() in (
-                    "chrome",
-                    "youtube",
-                    "vs code",
-                    "vscode",
-                    "spotify",
-                    "notepad",
-                    "calculator",
-                ):
-                    return self._open_application(target)
-
+                # Special case: Demo 5 ("Open the first result")
                 if target.upper() in ("FIRST_RESULT", "FIRST_ONE"):
                     return self._open_first_search_result(gaze_xy)
 
+                # Focus the real window/tab currently under the user's gaze or target name
+                if target and target.lower() not in ("desktop", "none", "screen"):
+                    try:
+                        matching_wins = [
+                            w for w in gw.getAllWindows()
+                            if w.title and target.lower() in w.title.lower() and not w.isMinimized
+                        ]
+                        if matching_wins:
+                            matching_wins[0].activate()
+                    except Exception:
+                        pass
+
+                # Move and click directly at the live Gaze or Gesture coordinate on the current screen
                 click_pos = cursor_xy or gaze_xy
                 if click_pos and click_pos != (0, 0):
+                    pyautogui.moveTo(click_pos[0], click_pos[1], duration=0.1)
                     pyautogui.click(click_pos[0], click_pos[1])
-                    return True, f"Clicked at ({click_pos[0]}, {click_pos[1]})"
+                    return True, f"Selected '{target or 'Screen'}' at ({click_pos[0]}, {click_pos[1]})"
+
                 pyautogui.click()
-                return True, "Clicked at current cursor position"
+                return True, f"Clicked active element in '{target or 'Screen'}'"
 
             # 4. SCROLL (Voice "Scroll down a little" or Gesture)
             if action == "SCROLL":
@@ -152,6 +158,19 @@ class ActionExecutor:
         name = target_name.lower().strip()
         if not name:
             return False, "No application target specified"
+
+        # Smart Focus: If a window matching the app name is already open, bring it to foreground
+        try:
+            open_windows = gw.getWindowsWithTitle(name)
+            for win in open_windows:
+                if win.title and win.title.lower() not in ("desktop", "program manager") and not win.isMinimized:
+                    try:
+                        win.activate()
+                        return True, f"Brought existing '{win.title}' to foreground"
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
         if "youtube" in name:
             webbrowser.open("https://www.youtube.com")

@@ -1,85 +1,101 @@
-from typing import Optional
 import pyautogui
 import pygetwindow as gw
 
 
 class ScreenInspector:
     """
-    Maps a 2D screen coordinate (X, Y) to a named UI target or application.
-    1. Checks actual OS window bounding boxes via pygetwindow.
-    2. Maps to the SYNTRA Synopsis Virtual Dock (Chrome | YouTube | VS Code | Spotify)
-       when looking at the desktop or top dock bar so Demo 3 & Demo 4 work reliably.
+    Maps a 2D screen coordinate (X, Y) purely to the real OS window or active tab
+    currently visible at that pixel, with zero hardcoded screen percentages.
     """
+
+    # Hidden Windows OS background processes to ignore
+    IGNORED_TITLES = {
+        "",
+        "program manager",
+        "windows input experience",
+        "microsoft text input application",
+        "settings",
+        "syntra",
+        "taskbar",
+    }
 
     def __init__(self) -> None:
         self.screen_w, self.screen_h = pyautogui.size()
 
     def get_active_window_title(self) -> str:
-        """Returns a clean application name for the currently focused OS window."""
+        """Returns the exact application or tab name of the currently focused OS window."""
         try:
             win = gw.getActiveWindow()
             if win and win.title:
-                return self._normalize_window_title(win.title)
+                clean = self._normalize_window_title(win.title)
+                if clean:
+                    return clean
         except Exception:
             pass
         return "Desktop"
 
     def resolve_target_at(self, x: int, y: int) -> str:
         """
-        Determines which application or target sits at screen pixel (x, y).
-        Matches the synopsis layout: Chrome | YouTube | VS Code | Spotify.
+        Finds the actual OS window or open tab sitting at pixel (x, y).
         """
-        if y <= int(self.screen_h * 0.28):
-            quarter = self.screen_w / 4.0
-            if x < quarter:
-                return "Chrome"
-            elif x < quarter * 2:
-                return "YouTube"
-            elif x < quarter * 3:
-                return "VS Code"
-            else:
-                return "Spotify"
-
+        # 1. Check all visible OS windows stacked at coordinate (x, y) in Z-order (top to bottom)
         try:
             windows = gw.getWindowsAt(x, y)
             for win in windows:
-                title = (win.title or "").strip()
-                if not title or title.lower() in ("program manager", "settings", "syntra"):
+                if not win.visible or win.isMinimized:
                     continue
-                normalized = self._normalize_window_title(title)
-                if normalized not in ("Desktop", "Terminal"):
+                raw_title = (win.title or "").strip()
+                if raw_title.lower() in self.IGNORED_TITLES:
+                    continue
+
+                normalized = self._normalize_window_title(raw_title)
+                if normalized and normalized not in ("Desktop", "Windows Input Experience"):
                     return normalized
         except Exception:
             pass
 
-        quarter = self.screen_w / 4.0
-        if x < quarter:
-            return "Chrome"
-        elif x < quarter * 2:
-            return "YouTube"
-        elif x < quarter * 3:
-            return "VS Code"
-        return "Spotify"
+        # 2. Fallback to whichever window is currently active in the foreground
+        return self.get_active_window_title()
 
     @staticmethod
     def _normalize_window_title(raw_title: str) -> str:
-        low = raw_title.lower()
+        """
+        Extracts the active tab or application name from the OS window title.
+        Example: 'YouTube - Google Chrome' -> 'YouTube'
+        Example: 'main.py - syntra - Visual Studio Code' -> 'VS Code (main.py)'
+        """
+        low = raw_title.lower().strip()
+        if low in ScreenInspector.IGNORED_TITLES:
+            return ""
+
         if any(k in low for k in ("cmd.exe", "command prompt", "powershell", "windows terminal", "python -c")):
             return "Terminal"
+
+        # Keep specific browser tab awareness before generic Chrome
         if "youtube" in low:
             return "YouTube"
-        if "chrome" in low or "google" in low or "edge" in low or "firefox" in low:
-            return "Chrome"
-        if "visual studio code" in low or "vs code" in low or ".py" in low or ".tsx" in low:
-            return "VS Code"
         if "spotify" in low:
             return "Spotify"
-        if "explorer" in low or "file" in low:
+        if "whatsapp" in low:
+            return "WhatsApp"
+        if "github" in low:
+            return "GitHub"
+
+        # If it's a browser tab, return the actual tab title + Browser
+        if any(b in low for b in ("google chrome", "microsoft edge", "firefox", "brave")):
+            parts = [p.strip() for p in raw_title.split("-") if p.strip()]
+            tab_name = parts[0][:28] if len(parts) > 1 else "Chrome"
+            return tab_name if tab_name.lower() != "new tab" else "Chrome"
+
+        if "visual studio code" in low or "vs code" in low or ".py" in low or ".tsx" in low:
+            return "VS Code"
+        if "explorer" in low:
             return "File Explorer"
         if "notepad" in low:
             return "Notepad"
+
         parts = [p.strip() for p in raw_title.split("-") if p.strip()]
-        return parts[-1][:30] if parts else "Desktop"
+        return parts[0][:30] if parts else "Desktop"
 
 
 screen_inspector = ScreenInspector()

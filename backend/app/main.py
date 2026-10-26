@@ -212,10 +212,10 @@ class SyntraRuntimeController:
                     fusion_engine.ingest_gaze(gaze_state)
 
                     # Demo 3: Gaze Dwell Selection trigger
-                    # if dwell_fired and self.os_control_enabled:
-                        # dwell_res = fusion_engine.evaluate_dwell_trigger(gaze_state)
-                        # if dwell_res:
-                        #     self._process_and_execute(*dwell_res, loop_start)
+                    if dwell_fired and self.os_control_enabled:
+                         dwell_res = fusion_engine.evaluate_dwell_trigger(gaze_state)
+                         if dwell_res:
+                           self._process_and_execute(*dwell_res, loop_start)
 
                 # 2. Run Hand Gesture Module (HOW)
                 if fusion_engine.enable_gesture:
