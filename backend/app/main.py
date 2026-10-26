@@ -19,6 +19,7 @@ from app.perception.camera_manager import camera_manager
 from app.perception.gaze_tracker import gaze_tracker
 from app.perception.gesture_tracker import gesture_tracker
 from app.perception.voice_engine import voice_engine
+from app.perception.screen_inspector import screen_inspector
 from app.schemas import (
     ActionLogResponse,
     CalibrationRequest,
@@ -31,6 +32,7 @@ from app.schemas import (
     UserProfileResponse,
     UserProfileUpdate,
     VoiceState,
+    StructuredIntent
 )
 
 
@@ -88,6 +90,11 @@ class SyntraRuntimeController:
 
         resolved_intent, score, active_mods, meta = eval_result
         self._process_and_execute(resolved_intent, score, active_mods, meta, start_t)
+
+
+
+
+
 
     def _process_and_execute(
         self,
