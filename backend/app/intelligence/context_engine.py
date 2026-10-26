@@ -1,96 +1,119 @@
 from collections import deque
-from typing import Deque, Optional
-from app.perception.screen_inspector import screen_inspector
+import threading
+from typing import Deque, List, Optional
 from app.schemas import ContextSnapshot, GazeState, StructuredIntent
 
 
 class ContextEngine:
     """
-    Maintains conversational and spatial state history across interactions.
-    Resolves ambiguous references ('it', 'this', 'that', 'first result', 'previous result')
-    using recent Gaze Targets, active OS windows, and prior executed commands.
+    Maintains spatial (gaze) and conversational short-term memory.
+    Resolves deictic references ('it', 'this', 'that', 'first result') and promotes
+    gestural selection on known application targets into OPEN_APPLICATION intents.
     """
 
+    KNOWN_APPLICATIONS = {"chrome", "youtube", "vs code", "vscode", "spotify", "notepad", "calculator", "terminal"}
+    CANONICAL_APP_NAMES = {
+        "chrome": "Chrome",
+        "youtube": "YouTube",
+        "vs code": "VS Code",
+        "vscode": "VS Code",
+        "spotify": "Spotify",
+        "notepad": "Notepad",
+        "calculator": "Calculator",
+        "terminal": "Terminal",
+    }
+
     def __init__(self) -> None:
+        self._lock = threading.RLock()
         self.active_application: str = "Desktop"
-        self.last_gaze_target: Optional[str] = None
-        self.last_executed_intent: Optional[str] = None
-        self.last_search_query: Optional[str] = None
-        self.recent_targets: Deque[str] = deque(maxlen=6)
+        self._recent_targets: Deque[str] = deque(maxlen=8)
+        self._last_intents: Deque[str] = deque(maxlen=8)
+
+    @classmethod
+    def is_launchable_app(cls, target: Optional[str]) -> bool:
+        if not target:
+            return False
+        return target.strip().lower() in cls.KNOWN_APPLICATIONS
+
+    @classmethod
+    def normalize_app_name(cls, target: str) -> str:
+        key = target.strip().lower()
+        return cls.CANONICAL_APP_NAMES.get(key, target)
 
     def update_spatial_context(self, gaze: GazeState) -> None:
-        """Updates the context memory with the latest high-confidence gaze target and OS window."""
-        os_win = screen_inspector.get_active_window_title()
-        if os_win and os_win != "Desktop" and not os_win.startswith("c \"import"):
-            self.active_application = os_win
-
-        if gaze.target and gaze.confidence >= 0.60:
-            clean_target = gaze.target
-            if clean_target.startswith("c \"import"):
-                clean_target = "Terminal"
-            self.last_gaze_target = clean_target
-            if not self.recent_targets or self.recent_targets[0] != clean_target:
-                self.recent_targets.appendleft(clean_target)
-
-    def resolve_intent(
-        self, intent: StructuredIntent, window_gaze_target: Optional[str] = None
-    ) -> StructuredIntent:
-        """
-        Resolves deictic references (IT_REF, FIRST_RESULT, missing application context)
-        by combining the current temporal window's Gaze Target with historical context.
-        """
-        resolved = intent.model_copy(deep=True)
-
-        # Best available spatial target: temporal window gaze target -> recent gaze target -> active app
-        spatial_target = window_gaze_target or self.last_gaze_target or self.active_application
-        if spatial_target and spatial_target.startswith("c \"import"):
-            spatial_target = "Chrome"
-
-        # 1. Resolve Pronoun Reference ("Open it", "Play this", "Close that", "Delete this file")
-        if resolved.target in ("IT_REF", None, ""):
-            if resolved.intent in (
-                "OPEN_APPLICATION",
-                "CLICK",
-                "SELECT",
-                "PLAY",
-                "CLOSE_APPLICATION",
-                "DELETE_FILE",
-            ):
-                resolved.target = spatial_target
-
-        # 2. Demo 5 Support: "Search for Python" while Chrome is open -> bind application = Chrome
-        if resolved.intent == "WEB_SEARCH" and not resolved.application:
-            resolved.application = (
-                self.active_application
-                if self.active_application in ("Chrome", "YouTube")
-                else "Chrome"
-            )
-
-        # 3. Demo 5 Support: "Open the first result" after a web search
-        if resolved.target == "FIRST_RESULT":
-            resolved.application = self.active_application or "Chrome"
-
-        return resolved
+        with self._lock:
+            if gaze.target and gaze.target != "None":
+                if not self._recent_targets or self._recent_targets[0] != gaze.target:
+                    self._recent_targets.appendleft(gaze.target)
 
     def record_executed_intent(self, intent: StructuredIntent) -> None:
-        """Updates conversation state after an intent is successfully executed."""
-        self.last_executed_intent = intent.intent
-        if intent.intent == "OPEN_APPLICATION" and intent.target:
-            self.active_application = intent.target.title()
-            if not self.recent_targets or self.recent_targets[0] != self.active_application:
-                self.recent_targets.appendleft(self.active_application)
-        elif intent.intent == "WEB_SEARCH":
-            self.active_application = "Chrome"
-            self.last_search_query = intent.query or intent.target
+        with self._lock:
+            summary = f"{intent.intent}({intent.target or ''})"
+            self._last_intents.appendleft(summary)
+            if intent.intent == "OPEN_APPLICATION" and intent.target:
+                self.active_application = self.normalize_app_name(intent.target)
+
+    def resolve_intent(
+        self,
+        raw_intent: StructuredIntent,
+        window_gaze_target: Optional[str] = None,
+        gesture_name: Optional[str] = None,
+    ) -> StructuredIntent:
+        with self._lock:
+            resolved = raw_intent.model_copy(deep=True)
+            fallback_target = window_gaze_target or (
+                self._recent_targets[0] if self._recent_targets else None
+            )
+
+            # Bind deictic pronouns ("Open it", "Delete this file") to gaze/context target
+            if resolved.target in ("IT_REF", "THIS_REF", None) and fallback_target:
+                if resolved.intent in ("OPEN_APPLICATION", "SELECT", "CLICK", "DELETE_FILE", "CLOSE_APPLICATION"):
+                    resolved.target = fallback_target
+
+            # Promote CLICK/SELECT + PINCH on a known application target to OPEN_APPLICATION
+            if (
+                gesture_name == "PINCH"
+                and resolved.intent in ("CLICK", "SELECT")
+                and self.is_launchable_app(resolved.target)
+            ):
+                resolved.intent = "OPEN_APPLICATION"
+                resolved.target = self.normalize_app_name(resolved.target)
+            elif resolved.intent == "OPEN_APPLICATION" and resolved.target:
+                resolved.target = self.normalize_app_name(resolved.target)
+
+            return resolved
+
+    def resolve_gesture_intent(
+        self, gesture: str, mapped_action: str, gaze_target: Optional[str]
+    ) -> Optional[StructuredIntent]:
+        """Maps discrete hand gestures and spatial context to a StructuredIntent."""
+        if gesture == "THUMBS_UP":
+            return StructuredIntent(intent="CONFIRM", raw_source="GESTURE")
+        if gesture == "THUMBS_DOWN":
+            return StructuredIntent(intent="CANCEL", raw_source="GESTURE")
+        if gesture == "PALM":
+            action = mapped_action if mapped_action and mapped_action != "NONE" else "STOP"
+            return StructuredIntent(intent=action, raw_source="GESTURE")
+        if gesture == "PINCH":
+            if self.is_launchable_app(gaze_target):
+                return StructuredIntent(
+                    intent="OPEN_APPLICATION",
+                    target=self.normalize_app_name(gaze_target),
+                    raw_source="FUSION",
+                )
+            action = mapped_action if mapped_action and mapped_action != "NONE" else "CLICK"
+            return StructuredIntent(intent=action, target=gaze_target, raw_source="GESTURE")
+        if gesture == "FIST":
+            return StructuredIntent(intent="GRAB", target=gaze_target, raw_source="GESTURE")
+        return None
 
     def get_snapshot(self) -> ContextSnapshot:
-        return ContextSnapshot(
-            active_application=self.active_application,
-            last_target=self.last_gaze_target,
-            last_intent=self.last_executed_intent,
-            last_query=self.last_search_query,
-            recent_targets=list(self.recent_targets),
-        )
+        with self._lock:
+            return ContextSnapshot(
+                active_application=self.active_application,
+                recent_targets=list(self._recent_targets),
+                last_intents=list(self._last_intents),
+            )
 
 
 context_engine = ContextEngine()
